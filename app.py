@@ -1,3 +1,6 @@
+import eventlet
+eventlet.monkey_patch()
+
 from flask import Flask, send_from_directory
 from flask_socketio import SocketIO
 import requests
@@ -6,7 +9,6 @@ import threading
 import time
 import os
 import json
-
 app = Flask(__name__, static_folder="public")
 socketio = SocketIO(app, cors_allowed_origins="*")
 
