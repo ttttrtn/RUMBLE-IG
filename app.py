@@ -1,6 +1,3 @@
-import eventlet
-eventlet.monkey_patch()
-
 from flask import Flask, send_from_directory
 from flask_socketio import SocketIO
 import requests
@@ -9,8 +6,15 @@ import threading
 import time
 import os
 import json
+
+# ---------------- APP ----------------
 app = Flask(__name__, static_folder="public")
-socketio = SocketIO(app, cors_allowed_origins="*")
+
+socketio = SocketIO(
+    app,
+    cors_allowed_origins="*",
+    async_mode="threading"
+)
 
 # ---------------- CONFIG ----------------
 RUMBLE_KEY = os.environ.get("RUMBLE_KEY")
@@ -24,10 +28,15 @@ CACHE_FILE = "ig_cache.json"
 # ---------------- INSTALOADER ----------------
 L = instaloader.Instaloader()
 
-try:
-    L.login(IG_USERNAME, IG_PASSWORD)
-except:
-    print("Instagram login failed")
+def ig_login():
+    try:
+        if IG_USERNAME and IG_PASSWORD:
+            L.login(IG_USERNAME, IG_PASSWORD)
+            print("Instagram login success")
+    except Exception as e:
+        print("Instagram login failed:", e)
+
+ig_login()
 
 # ---------------- CACHE ----------------
 def load_cache():
@@ -42,29 +51,27 @@ def save_cache(data):
 ig_followers = load_cache()
 
 # ---------------- RUMBLE ----------------
-last_rumble_follow = None
-last_rumble_sub = None
+last_follow = None
+last_sub = None
 
 def rumble_loop():
-    global last_rumble_follow, last_rumble_sub
+    global last_follow, last_sub
 
     while True:
         try:
-            data = requests.get(RUMBLE_URL).json()
+            data = requests.get(RUMBLE_URL, timeout=10).json()
 
-            follower = data["followers"]["latest_follower"]["username"]
-            sub = data["subscribers"]["latest_subscriber"]["username"]
+            follower = data.get("followers", {}).get("latest_follower", {}).get("username")
+            sub = data.get("subscribers", {}).get("latest_subscriber", {}).get("username")
 
-            if follower and follower != last_rumble_follow:
-                last_rumble_follow = follower
-
+            if follower and follower != last_follow:
+                last_follow = follower
                 socketio.emit("alert", {
                     "text": f"🔥 On Rumble: {follower} followed"
                 })
 
-            if sub and sub != last_rumble_sub:
-                last_rumble_sub = sub
-
+            if sub and sub != last_sub:
+                last_sub = sub
                 socketio.emit("alert", {
                     "text": f"💎 On Rumble: {sub} subscribed"
                 })
@@ -72,13 +79,22 @@ def rumble_loop():
         except Exception as e:
             print("Rumble error:", e)
 
-        time.sleep(2)
+        time.sleep(3)
 
 # ---------------- INSTAGRAM ----------------
-def get_recent(profile, limit=150):
-    return set(
-        list(f.username for i, f in enumerate(profile.get_followers()) if i < limit)
-    )
+def get_followers(profile, limit=120):
+    users = set()
+
+    try:
+        for i, f in enumerate(profile.get_followers()):
+            users.add(f.username)
+            if i >= limit:
+                break
+    except:
+        pass
+
+    return users
+
 
 def instagram_loop():
     global ig_followers
@@ -86,7 +102,7 @@ def instagram_loop():
     while True:
         try:
             profile = instaloader.Profile.from_username(L.context, IG_USERNAME)
-            current = get_recent(profile)
+            current = get_followers(profile)
 
             new = current - ig_followers
 
@@ -104,29 +120,19 @@ def instagram_loop():
 
         time.sleep(60)
 
-# ---------------- RECOVERY ----------------
-def recovery_loop():
-    while True:
-        try:
-            L.login(IG_USERNAME, IG_PASSWORD)
-        except:
-            pass
-
-        time.sleep(600)
-
 # ---------------- ROUTES ----------------
 @app.route("/")
-def home():
+def index():
     return send_from_directory("public", "index.html")
 
 @app.route("/<path:path>")
-def static(path):
+def static_files(path):
     return send_from_directory("public", path)
 
-# ---------------- START ----------------
+# ---------------- START THREADS ----------------
 threading.Thread(target=rumble_loop, daemon=True).start()
 threading.Thread(target=instagram_loop, daemon=True).start()
-threading.Thread(target=recovery_loop, daemon=True).start()
 
+# ---------------- RUN ----------------
 if __name__ == "__main__":
     socketio.run(app, host="0.0.0.0", port=10000)
